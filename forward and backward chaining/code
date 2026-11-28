@@ -1,4 +1,3 @@
-import copy
 import re
 
 # ==========================================
@@ -57,11 +56,10 @@ class Compound:
 
 
 class Rule:
-  """Represents a Definite Clause: premise_1 & premise_2 ... -> conclusion"""
 
   def __init__(self, premises, conclusion):
-    self.premises = premises  # List of Compound predicates
-    self.conclusion = conclusion  # Single Compound predicate
+    self.premises = premises
+    self.conclusion = conclusion
 
   def __repr__(self):
     if not self.premises:
@@ -76,7 +74,7 @@ def parse_atom(expr_str):
     op = match.group(1)
     args = [a.strip() for a in match.group(2).split(',')]
     return Compound(op, [parse_atom(a) for a in args])
-  return Variable(expr_str) if expr_str[0].islower() else Constant(expr_str)
+  return Variable(expr_str) if expr_str.islower() else Constant(expr_str)
 
 
 def parse_rule(rule_str):
@@ -154,7 +152,6 @@ _var_counter = 0
 
 
 def standardize_variables(rule):
-  """Renames variables in a rule (e.g., x -> x_1) to avoid naming collisions."""
   global _var_counter
   _var_counter += 1
   mapping = {}
@@ -172,7 +169,7 @@ def standardize_variables(rule):
 
 
 # ==========================================
-# 3. Knowledge Base with Forward & Backward Chaining
+# 3. Knowledge Base (Forward & Backward Chaining)
 # ==========================================
 
 
@@ -190,46 +187,51 @@ class FOLKnowledgeBase:
     else:
       self.rules.append(rule)
 
-  # --- FORWARD CHAINING (Data-Driven) ---
+  # --- FORWARD CHAINING ---
   def forward_chain(self, query_str):
     query = parse_atom(query_str)
-    print(f'\n--- Forward Chaining for Query: {query} ---')
+    print(f'\n==================================================')
+    print(f'FORWARD CHAINING | Query: {query}')
+    print(f'==================================================')
 
-    # Check if already known
     for fact in self.facts:
       theta = unify(fact, query)
       if theta is not None:
-        print(f'Query found directly in initial facts: {fact}')
+        print(f'  [Direct Match] {fact}')
+        print(f'Result: PROVEN! Answer: {substitute(query, theta)}\n')
         return True
 
     known_facts = list(self.facts)
+    step = 1
 
     while True:
       new_facts = []
       for rule in self.rules:
         std_rule = standardize_variables(rule)
-        # Find all substitutions that satisfy all premises of the rule
         for theta in self._match_premises(std_rule.premises, known_facts, {}):
           inferred = substitute(std_rule.conclusion, theta)
           if inferred not in known_facts and inferred not in new_facts:
             new_facts.append(inferred)
-            print(f'  [Inferred] {inferred}   (using rule: {rule})')
+            print(f'  Step {step}: Inferred {inferred}')
+            print(f'          Rule used: {rule}')
+            step += 1
 
-            # Check if the newly inferred fact satisfies the query
             ans_theta = unify(inferred, query)
             if ans_theta is not None:
-              print(f'Result: PROVEN! Substitution: {ans_theta}')
+              print(f'\nResult: PROVEN! Answer: {substitute(query, ans_theta)}')
+              if ans_theta:
+                print(f'Variable Bindings: {ans_theta}')
+              print()
               return True
 
       if not new_facts:
         break
       known_facts.extend(new_facts)
 
-    print('Result: NOT PROVEN (No more facts can be inferred).')
+    print('\nResult: NOT PROVEN.\n')
     return False
 
   def _match_premises(self, premises, facts, theta):
-    """Recursively finds all substitutions satisfying a list of premises."""
     if not premises:
       yield theta
       return
@@ -240,32 +242,38 @@ class FOLKnowledgeBase:
       if new_theta is not None:
         yield from self._match_premises(rest, facts, new_theta)
 
-  # --- BACKWARD CHAINING (Goal-Driven) ---
+  # --- BACKWARD CHAINING ---
   def backward_chain(self, query_str):
     query = parse_atom(query_str)
-    print(f'\n--- Backward Chaining for Query: {query} ---')
+    print(f'\n==================================================')
+    print(f'BACKWARD CHAINING | Query: {query}')
+    print(f'==================================================')
     solutions = list(self._bc_or(query, {}, depth=0))
     if solutions:
-      print(f'Result: PROVEN! Valid Substitutions: {solutions}')
+      print(f'\nResult: PROVEN!')
+      unique_answers = []
+      for sol in solutions:
+        ans = str(substitute(query, sol))
+        if ans not in unique_answers:
+          unique_answers.append(ans)
+          print(f'  Answer: {ans}')
+      print()
       return True
     else:
-      print('Result: NOT PROVEN.')
+      print('\nResult: NOT PROVEN.\n')
       return False
 
   def _bc_or(self, goal, theta, depth):
-    """Proves a single goal by matching against facts OR rules."""
     indent = '  ' * depth
     goal_sub = substitute(goal, theta)
     print(f'{indent}[Goal] {goal_sub}')
 
-    # 1. Try unifying with known facts
     for fact in self.facts:
       new_theta = unify(fact, goal_sub, theta.copy())
       if new_theta is not None:
         print(f'{indent}  -> Matched Fact: {fact}')
         yield new_theta
 
-    # 2. Try unifying with rule conclusions and proving their premises
     for rule in self.rules:
       std_rule = standardize_variables(rule)
       new_theta = unify(std_rule.conclusion, goal_sub, theta.copy())
@@ -274,7 +282,6 @@ class FOLKnowledgeBase:
         yield from self._bc_and(std_rule.premises, new_theta, depth + 1)
 
   def _bc_and(self, goals, theta, depth):
-    """Proves a conjunction (list) of sub-goals sequentially."""
     if not goals:
       yield theta
       return
@@ -284,24 +291,45 @@ class FOLKnowledgeBase:
 
 
 # ==========================================
-# 4. Execution & Classic AI Example
+# 4. Interactive User Input Loop
 # ==========================================
 if __name__ == '__main__':
   kb = FOLKnowledgeBase()
 
-  # Classic "Criminal West" Knowledge Base (Russell & Norvig):
-  # "It is a crime for an American to sell weapons to hostile nations."
-  kb.tell('American(x) & Weapon(y) & Sells(x, y, z) & Hostile(z) -> Criminal(x)')
-  kb.tell('Missile(x) -> Weapon(x)')
-  kb.tell('Missile(x) & Owns(Nono, x) -> Sells(West, x, Nono)')
-  kb.tell('Enemy(x, America) -> Hostile(x)')
+  print('==================================================')
+  print('     FIRST-ORDER LOGIC KNOWLEDGE BASE ENGINE      ')
+  print('==================================================')
+  print('Formatting Guide:')
+  print('  - Constants & Predicates start with UPPERCASE (e.g., Socrates, Man)')
+  print('  - Variables start with LOWERCASE (e.g., x, y, who)')
+  print('  - Fact example: Man(Socrates)')
+  print('  - Rule example: Man(x) -> Mortal(x)')
+  print("  - Compound premise example: Parent(x, y) & Male(x) -> Father(x, y)")
+  print('--------------------------------------------------')
 
-  # Initial Facts:
-  kb.tell('American(West)')
-  kb.tell('Enemy(Nono, America)')
-  kb.tell('Owns(Nono, M1)')
-  kb.tell('Missile(M1)')
+  # 1. Input Facts & Rules
+  n = int(input('\nHow many statements (facts/rules) do you want to enter? '))
+  print('Enter each statement:')
+  for i in range(1, n + 1):
+    stmt = input(f'  Statement {i}: ').strip()
+    kb.tell(stmt)
 
-  # Prove that West is a Criminal using both algorithms:
-  kb.forward_chain('Criminal(West)')
-  kb.backward_chain('Criminal(West)')
+  # 2. Input Queries
+  while True:
+    query = input("\nEnter a query to prove (or type 'exit' to quit): ").strip()
+    if query.lower() == 'exit':
+      break
+    if not query:
+      continue
+
+    method = input(
+        'Choose method - (1) Forward Chaining, (2) Backward Chaining, (3) Both: '
+    ).strip()
+
+    if method == '1':
+      kb.forward_chain(query)
+    elif method == '2':
+      kb.backward_chain(query)
+    else:
+      kb.forward_chain(query)
+      kb.backward_chain(query)
