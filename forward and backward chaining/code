@@ -1,0 +1,307 @@
+import copy
+import re
+
+# ==========================================
+# 1. FOL Data Structures & Parser
+# ==========================================
+
+
+class Variable:
+
+  def __init__(self, name):
+    self.name = name
+
+  def __repr__(self):
+    return self.name
+
+  def __eq__(self, other):
+    return isinstance(other, Variable) and self.name == other.name
+
+  def __hash__(self):
+    return hash(self.name)
+
+
+class Constant:
+
+  def __init__(self, name):
+    self.name = name
+
+  def __repr__(self):
+    return self.name
+
+  def __eq__(self, other):
+    return isinstance(other, Constant) and self.name == other.name
+
+  def __hash__(self):
+    return hash(self.name)
+
+
+class Compound:
+
+  def __init__(self, op, args):
+    self.op = op
+    self.args = list(args)
+
+  def __repr__(self):
+    return f"{self.op}({', '.join(map(str, self.args))})"
+
+  def __eq__(self, other):
+    return (
+        isinstance(other, Compound)
+        and self.op == other.op
+        and self.args == other.args
+    )
+
+  def __hash__(self):
+    return hash((self.op, tuple(self.args)))
+
+
+class Rule:
+  """Represents a Definite Clause: premise_1 & premise_2 ... -> conclusion"""
+
+  def __init__(self, premises, conclusion):
+    self.premises = premises  # List of Compound predicates
+    self.conclusion = conclusion  # Single Compound predicate
+
+  def __repr__(self):
+    if not self.premises:
+      return str(self.conclusion)
+    return f"{' & '.join(map(str, self.premises))} -> {self.conclusion}"
+
+
+def parse_atom(expr_str):
+  expr_str = expr_str.strip()
+  match = re.match(r'^([A-Za-z0-9_]+)\((.*)\)$', expr_str)
+  if match:
+    op = match.group(1)
+    args = [a.strip() for a in match.group(2).split(',')]
+    return Compound(op, [parse_atom(a) for a in args])
+  return Variable(expr_str) if expr_str[0].islower() else Constant(expr_str)
+
+
+def parse_rule(rule_str):
+  if '->' in rule_str:
+    lhs, rhs = rule_str.split('->')
+    premises = [parse_atom(p) for p in lhs.split('&')]
+    conclusion = parse_atom(rhs)
+    return Rule(premises, conclusion)
+  return Rule([], parse_atom(rule_str))
+
+
+# ==========================================
+# 2. Unification & Substitution Helpers
+# ==========================================
+
+
+def occur_check(var, x, theta):
+  if var == x:
+    return True
+  elif isinstance(x, Variable) and x in theta:
+    return occur_check(var, theta[x], theta)
+  elif isinstance(x, Compound):
+    return any(occur_check(var, arg, theta) for arg in x.args)
+  return False
+
+
+def unify_var(var, x, theta):
+  if var in theta:
+    return unify(theta[var], x, theta)
+  elif isinstance(x, Variable) and x in theta:
+    return unify(var, theta[x], theta)
+  elif occur_check(var, x, theta):
+    return None
+  new_theta = theta.copy()
+  new_theta[var] = x
+  return new_theta
+
+
+def unify(x, y, theta=None):
+  if theta is None:
+    theta = {}
+  if theta is None:
+    return None
+  elif x == y:
+    return theta
+  elif isinstance(x, Variable):
+    return unify_var(x, y, theta)
+  elif isinstance(y, Variable):
+    return unify_var(y, x, theta)
+  elif isinstance(x, Compound) and isinstance(y, Compound):
+    if x.op != y.op or len(x.args) != len(y.args):
+      return None
+    for ax, ay in zip(x.args, y.args):
+      theta = unify(ax, ay, theta)
+      if theta is None:
+        return None
+    return theta
+  return None
+
+
+def substitute(expr, theta):
+  if isinstance(expr, Variable):
+    return substitute(theta[expr], theta) if expr in theta else expr
+  elif isinstance(expr, Compound):
+    return Compound(expr.op, [substitute(arg, theta) for arg in expr.args])
+  elif isinstance(expr, Rule):
+    return Rule(
+        [substitute(p, theta) for p in expr.premises],
+        substitute(expr.conclusion, theta),
+    )
+  return expr
+
+
+_var_counter = 0
+
+
+def standardize_variables(rule):
+  """Renames variables in a rule (e.g., x -> x_1) to avoid naming collisions."""
+  global _var_counter
+  _var_counter += 1
+  mapping = {}
+
+  def rename(expr):
+    if isinstance(expr, Variable):
+      if expr not in mapping:
+        mapping[expr] = Variable(f'{expr.name}_{_var_counter}')
+      return mapping[expr]
+    elif isinstance(expr, Compound):
+      return Compound(expr.op, [rename(arg) for arg in expr.args])
+    return expr
+
+  return Rule([rename(p) for p in rule.premises], rename(rule.conclusion))
+
+
+# ==========================================
+# 3. Knowledge Base with Forward & Backward Chaining
+# ==========================================
+
+
+class FOLKnowledgeBase:
+
+  def __init__(self):
+    self.facts = []
+    self.rules = []
+
+  def tell(self, sentence_str):
+    rule = parse_rule(sentence_str)
+    if not rule.premises:
+      if rule.conclusion not in self.facts:
+        self.facts.append(rule.conclusion)
+    else:
+      self.rules.append(rule)
+
+  # --- FORWARD CHAINING (Data-Driven) ---
+  def forward_chain(self, query_str):
+    query = parse_atom(query_str)
+    print(f'\n--- Forward Chaining for Query: {query} ---')
+
+    # Check if already known
+    for fact in self.facts:
+      theta = unify(fact, query)
+      if theta is not None:
+        print(f'Query found directly in initial facts: {fact}')
+        return True
+
+    known_facts = list(self.facts)
+
+    while True:
+      new_facts = []
+      for rule in self.rules:
+        std_rule = standardize_variables(rule)
+        # Find all substitutions that satisfy all premises of the rule
+        for theta in self._match_premises(std_rule.premises, known_facts, {}):
+          inferred = substitute(std_rule.conclusion, theta)
+          if inferred not in known_facts and inferred not in new_facts:
+            new_facts.append(inferred)
+            print(f'  [Inferred] {inferred}   (using rule: {rule})')
+
+            # Check if the newly inferred fact satisfies the query
+            ans_theta = unify(inferred, query)
+            if ans_theta is not None:
+              print(f'Result: PROVEN! Substitution: {ans_theta}')
+              return True
+
+      if not new_facts:
+        break
+      known_facts.extend(new_facts)
+
+    print('Result: NOT PROVEN (No more facts can be inferred).')
+    return False
+
+  def _match_premises(self, premises, facts, theta):
+    """Recursively finds all substitutions satisfying a list of premises."""
+    if not premises:
+      yield theta
+      return
+    first, rest = premises[0], premises[1:]
+    first_sub = substitute(first, theta)
+    for fact in facts:
+      new_theta = unify(first_sub, fact, theta.copy())
+      if new_theta is not None:
+        yield from self._match_premises(rest, facts, new_theta)
+
+  # --- BACKWARD CHAINING (Goal-Driven) ---
+  def backward_chain(self, query_str):
+    query = parse_atom(query_str)
+    print(f'\n--- Backward Chaining for Query: {query} ---')
+    solutions = list(self._bc_or(query, {}, depth=0))
+    if solutions:
+      print(f'Result: PROVEN! Valid Substitutions: {solutions}')
+      return True
+    else:
+      print('Result: NOT PROVEN.')
+      return False
+
+  def _bc_or(self, goal, theta, depth):
+    """Proves a single goal by matching against facts OR rules."""
+    indent = '  ' * depth
+    goal_sub = substitute(goal, theta)
+    print(f'{indent}[Goal] {goal_sub}')
+
+    # 1. Try unifying with known facts
+    for fact in self.facts:
+      new_theta = unify(fact, goal_sub, theta.copy())
+      if new_theta is not None:
+        print(f'{indent}  -> Matched Fact: {fact}')
+        yield new_theta
+
+    # 2. Try unifying with rule conclusions and proving their premises
+    for rule in self.rules:
+      std_rule = standardize_variables(rule)
+      new_theta = unify(std_rule.conclusion, goal_sub, theta.copy())
+      if new_theta is not None:
+        print(f'{indent}  -> Trying Rule: {rule}')
+        yield from self._bc_and(std_rule.premises, new_theta, depth + 1)
+
+  def _bc_and(self, goals, theta, depth):
+    """Proves a conjunction (list) of sub-goals sequentially."""
+    if not goals:
+      yield theta
+      return
+    first, rest = goals[0], goals[1:]
+    for theta_1 in self._bc_or(first, theta, depth):
+      yield from self._bc_and(rest, theta_1, depth)
+
+
+# ==========================================
+# 4. Execution & Classic AI Example
+# ==========================================
+if __name__ == '__main__':
+  kb = FOLKnowledgeBase()
+
+  # Classic "Criminal West" Knowledge Base (Russell & Norvig):
+  # "It is a crime for an American to sell weapons to hostile nations."
+  kb.tell('American(x) & Weapon(y) & Sells(x, y, z) & Hostile(z) -> Criminal(x)')
+  kb.tell('Missile(x) -> Weapon(x)')
+  kb.tell('Missile(x) & Owns(Nono, x) -> Sells(West, x, Nono)')
+  kb.tell('Enemy(x, America) -> Hostile(x)')
+
+  # Initial Facts:
+  kb.tell('American(West)')
+  kb.tell('Enemy(Nono, America)')
+  kb.tell('Owns(Nono, M1)')
+  kb.tell('Missile(M1)')
+
+  # Prove that West is a Criminal using both algorithms:
+  kb.forward_chain('Criminal(West)')
+  kb.backward_chain('Criminal(West)')
