@@ -1,0 +1,219 @@
+import re
+
+# --- 1. Data Structures for FOL Expressions ---
+
+
+class Variable:
+
+  def __init__(self, name):
+    self.name = name
+
+  def __repr__(self):
+    return self.name
+
+  def __eq__(self, other):
+    return isinstance(other, Variable) and self.name == other.name
+
+  def __hash__(self):
+    return hash(self.name)
+
+
+class Constant:
+
+  def __init__(self, name):
+    self.name = name
+
+  def __repr__(self):
+    return self.name
+
+  def __eq__(self, other):
+    return isinstance(other, Constant) and self.name == other.name
+
+  def __hash__(self):
+    return hash(self.name)
+
+
+class Compound:
+  """Represents a Predicate or Function: e.g., Knows(John, x) or Mother(y)"""
+
+  def __init__(self, op, args):
+    self.op = op  # Predicate or Function name (string)
+    self.args = list(args)  # List of Variable, Constant, or Compound
+
+  def __repr__(self):
+    args_str = ', '.join(map(str, self.args))
+    return f'{self.op}({args_str})'
+
+  def __eq__(self, other):
+    return (
+        isinstance(other, Compound)
+        and self.op == other.op
+        and self.args == other.args
+    )
+
+
+# --- 2. String Parser for Convenience ---
+
+
+def parse_expr(expr_str):
+  """
+    Parses a string into FOL objects.
+    Convention:
+      - Lowercase first letter (e.g., x, y, z) -> Variable
+      - Uppercase first letter with no '()' (e.g., John, Mary) -> Constant
+      - Uppercase first letter with '()' (e.g., Knows(x, y)) -> Compound
+    """
+  expr_str = expr_str.strip()
+
+  # Check if it's a compound expression: Name(arg1, arg2, ...)
+  match = re.match(r'^([A-Za-z0-9_]+)\((.*)\)$', expr_str)
+  if match:
+    op = match.group(1)
+    args_str = match.group(2)
+    args = _split_args(args_str)
+    return Compound(op, [parse_expr(arg) for arg in args])
+
+  # Otherwise, it's a Variable (starts with lowercase) or Constant (starts with uppercase)
+  if expr_str[0].islower():
+    return Variable(expr_str)
+  else:
+    return Constant(expr_str)
+
+
+def _split_args(args_str):
+  """Splits comma-separated arguments while respecting nested parentheses."""
+  args = []
+  depth = 0
+  current = []
+  for char in args_str:
+    if char == '(':
+      depth += 1
+      current.append(char)
+    elif char == ')':
+      depth -= 1
+      current.append(char)
+    elif char == ',' and depth == 0:
+      args.append(''.join(current).strip())
+      current = []
+    else:
+      current.append(char)
+  if current:
+    args.append(''.join(current).strip())
+  return args
+
+
+# --- 3. Core Unification Algorithm (Robinson's Algorithm) ---
+
+
+def occur_check(var, x, theta):
+  """
+    Prevents infinite loops by checking if `var` appears anywhere inside `x`
+    (e.g., trying to unify x with f(x)).
+    """
+  if var == x:
+    return True
+  elif isinstance(x, Variable) and x in theta:
+    return occur_check(var, theta[x], theta)
+  elif isinstance(x, Compound):
+    return any(occur_check(var, arg, theta) for arg in x.args)
+  return False
+
+
+def unify_var(var, x, theta):
+  """Handles unification when the first argument is a Variable."""
+  if var in theta:
+    return unify(theta[var], x, theta)
+  elif isinstance(x, Variable) and x in theta:
+    return unify(var, theta[x], theta)
+  elif occur_check(var, x, theta):
+    return None  # Failure due to occurs check
+  else:
+    # Create a new substitution dictionary with {var: x} added
+    new_theta = theta.copy()
+    new_theta[var] = x
+    return new_theta
+
+
+def unify(x, y, theta=None):
+  """
+    Unifies two FOL expressions `x` and `y` under substitution `theta`.
+    Returns the Most General Unifier (MGU) dictionary, or None if unification fails.
+    """
+  if theta is None:
+    theta = {}
+
+  # 1. Failure propagated from previous recursive step
+  if theta is None:
+    return None
+
+  # 2. Both expressions are identical
+  elif x == y:
+    return theta
+
+  # 3. x is a Variable
+  elif isinstance(x, Variable):
+    return unify_var(x, y, theta)
+
+  # 4. y is a Variable
+  elif isinstance(y, Variable):
+    return unify_var(y, x, theta)
+
+  # 5. Both are Compound expressions (Predicates or Functions)
+  elif isinstance(x, Compound) and isinstance(y, Compound):
+    if x.op != y.op or len(x.args) != len(y.args):
+      return None  # Predicate/Function names or arity do not match
+    for arg_x, arg_y in zip(x.args, y.args):
+      theta = unify(arg_x, arg_y, theta)
+      if theta is None:
+        return None
+    return theta
+
+  # 6. Otherwise (e.g., two different Constants), unification fails
+  else:
+    return None
+
+
+def substitute(expr, theta):
+  """Applies a substitution dictionary `theta` to an expression."""
+  if isinstance(expr, Variable):
+    if expr in theta:
+      return substitute(theta[expr], theta)
+    return expr
+  elif isinstance(expr, Compound):
+    return Compound(expr.op, [substitute(arg, theta) for arg in expr.args])
+  return expr
+
+
+# --- 4. Execution & Test Cases ---
+
+
+def run_unification_test(expr1_str, expr2_str):
+  e1 = parse_expr(expr1_str)
+  e2 = parse_expr(expr2_str)
+  print(f'Expr 1: {e1}')
+  print(f'Expr 2: {e2}')
+
+  mgu = unify(e1, e2)
+  if mgu is not None:
+    print(f'MGU (Substitution): {mgu}')
+    print(f'Unified Form:       {substitute(e1, mgu)}')
+  else:
+    print('Result:             Unification Failed (None)')
+  print('-' * 45)
+
+
+if __name__ == '__main__':
+  # Test 1: Standard variable and constant unification
+  run_unification_test('Knows(John, x)', 'Knows(John, Jane)')
+
+  # Test 2: Nested functions and variables
+  run_unification_test('Knows(John, x)', 'Knows(y, Mother(y))')
+
+  # Test 3: Multiple variables across nested functions
+  run_unification_test('P(x, g(x), y)', 'P(a, g(z), f(z))')
+
+  # Test 4: Occurs Check Failure (x cannot unify with f(x))
+  run_unification_test('P(x, x)', 'P(y, f(y))')
+
+  # Test 5: Constant mismatch failure
+  run_unification_test('Knows(John, x)', 'Knows(Bob, Jane)')
