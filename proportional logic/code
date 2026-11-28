@@ -1,0 +1,127 @@
+import itertools
+import re
+
+
+class KnowledgeBase:
+
+  def __init__(self):
+    self.statements = []
+    self.symbols = set()
+
+  def add(self, statement):
+    """Adds a propositional logic statement to the Knowledge Base."""
+    self.statements.append(statement)
+    self._extract_symbols(statement)
+
+  def _extract_symbols(self, expr):
+    """Finds all uppercase variable names in the expression."""
+    found = re.findall(r'\b[A-Z][A-Za-z0-9_]*\b', expr)
+    self.symbols.update(found)
+
+  def _to_python_expr(self, expr):
+    """
+        Converts standard logic notation to evaluatable Python code.
+        Operators supported:
+          ~   : NOT
+          &   : AND
+          |   : OR
+          ->  : IMPLIES
+          <-> : BICONDITIONAL (IFF)
+        """
+    # Replace symbols with dictionary lookups: e.g., R -> model['R']
+    expr = re.sub(r'\b([A-Z][A-Za-z0-9_]*)\b', r"model['\1']", expr)
+
+    # Replace logical operators with Python equivalents
+    expr = expr.replace('~', ' not ')
+    expr = expr.replace('&', ' and ')
+    expr = expr.replace('|', ' or ')
+    expr = expr.replace('<->', ' == ')
+
+    # Handle implication (A -> B is equivalent to (not A) or B)
+    # Note: Using <= on booleans in Python works cleanly because:
+    # False <= False (True), False <= True (True), True <= False (False), True <= True (True)
+    expr = expr.replace('->', ' <= ')
+
+    return expr
+
+  def _evaluate(self, expr, model):
+    """Evaluates a single logical statement against a truth assignment."""
+    py_expr = self._to_python_expr(expr)
+    return bool(eval(py_expr, {'__builtins__': None}, {'model': model}))
+
+  def entails(self, query):
+    """
+        Proves whether KB |= query using Truth Table Enumeration.
+        Returns True if the query is entailed, False otherwise.
+        """
+    # Combine KB symbols and any new symbols introduced in the query
+    all_symbols = sorted(
+        list(self.symbols.union(re.findall(r'\b[A-Z][A-Za-z0-9_]*\b', query)))
+    )
+
+    combinations = list(
+        itertools.product([False, True], repeat=len(all_symbols))
+    )
+
+    print(f"\n==========================================")
+    print(f"Proving Query:  {query}")
+    print(f"==========================================")
+
+    header = ' | '.join(all_symbols) + ' | KB  | Query'
+    print(header)
+    print('-' * len(header))
+
+    is_entailed = True
+    kb_models_count = 0
+
+    for combo in combinations:
+      model = dict(zip(all_symbols, combo))
+
+      # KB is True only if ALL statements in the KB evaluate to True
+      kb_val = all(self._evaluate(stmt, model) for stmt in self.statements)
+      query_val = self._evaluate(query, model)
+
+      row = ' | '.join(['T' if model[s] else 'F' for s in all_symbols])
+      print(
+          f"{row} | {'T' if kb_val else 'F'}   | {'T' if query_val else 'F'}"
+      )
+
+      if kb_val:
+        kb_models_count += 1
+        if not query_val:
+          is_entailed = False
+
+    print('-' * len(header))
+    if kb_models_count == 0:
+      print('Note: The Knowledge Base contains a contradiction (unsatisfiable).')
+
+    status = 'PROVEN (Entailed)' if is_entailed else 'NOT PROVEN (Not Entailed)'
+    print(f"Result: {status}\n")
+    return is_entailed
+
+
+# --- Example Usage ---
+if __name__ == '__main__':
+  kb = KnowledgeBase()
+
+  # Add arbitrary statements to the Knowledge Base
+  # Scenario:
+  # P: It is a public holiday
+  # W: I go to work
+  # S: I sleep in
+  kb.add('P -> ~W')  # If it is a public holiday, I do not go to work
+  kb.add('~W -> S')  # If I do not go to work, I sleep in
+  kb.add('P')  # It is a public holiday
+
+  print('Knowledge Base Statements:')
+  for s in kb.statements:
+    print(f"  * {s}")
+
+  # Test 1: Prove that I sleep in (S)
+  kb.entails('S')
+
+  # Test 2: Prove a compound statement (If it's a holiday, I sleep in: P -> S)
+  kb.entails('P -> S')
+
+  # Test 3: Try to prove I go to work (W) -> Should fail
+  kb.entails('W')
